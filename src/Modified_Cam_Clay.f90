@@ -1,4 +1,4 @@
-module CamClay
+module mod_UMAT_Cam_Clay
    use,intrinsic :: iso_fortran_env, only: dp => real64
    use,intrinsic :: iso_fortran_env, only: i32 => int32
 
@@ -80,12 +80,12 @@ contains
       ! DEC$ ATTRIBUTES DLLEXPORT, ALIAS:"UMAT" :: UMAT
       ! INCLUDE 'ABA_PARAM.INC'
       implicit none
-      integer(kind = i32) :: NTENS,NPROPS,NSTATEV
-      real(kind = dp) :: STRESS,STATEV,DDSDDE,SSE,SPD,SCD,&
-         RPL,DDSDDT,DRPLDE,DRPLDT,&
-         STRAN,DSTRAN,TIME,DTIME,TEMP,DTEMP,PREDEF,DPRED,&
-         NDI,NSHR,PROPS,COORDS,DROT,PNEWDT,&
-         CELENT,DFGRD0,DFGRD1,NOEL,NPT,LAYER,KSPT,KSTEP,KINC
+      integer(kind = i32) :: NTENS,NPROPS,NSTATEV, NDI, NSHR, NOEL, NPT, LAYER, KSPT,KSTEP,KINC
+      real(kind = dp) :: STRESS,STATEV,DDSDDE,SSE,SPD,SCD,        &
+                         RPL,DDSDDT,DRPLDE,DRPLDT, STRAN,DSTRAN,  &
+                         TIME,DTIME,TEMP,DTEMP,PREDEF,DPRED, &
+                         PROPS,COORDS,DROT,PNEWDT,CELENT,DFGRD0,  &
+                         DFGRD1
 
       CHARACTER*80 CMNAME
       DIMENSION STRESS(NTENS),STATEV(NSTATEV),&
@@ -93,14 +93,22 @@ contains
          STRAN(NTENS),DSTRAN(NTENS),TIME(2),PREDEF(1),DPRED(1),&
          PROPS(NPROPS),COORDS(3),DROT(3,3),DFGRD0(3,3),DFGRD1(3,3)
 
-
-
-
       ! Userdefined parameters
       real(kind = dp) :: xphics, xNu, xkappa, xlambda, xe0, zeta, xG, xK
       real(kind = dp) :: pp, EpsP(6), FTOL
       real(kind = dp), dimension(6) :: Sig, dEps, dEpsP
       integer(kind = i32) :: MaxIter, i
+
+      
+      ! Make sure all of the variables are used
+      if (.False.) then
+         ! This condiiton is purposefully set to zero so that the compiler is 
+         ! is tricked into thinking that all the variables are used.
+         print *, SSE, SPD, SCD, RPL, DDSDDT, DRPLDE, DRPLDT, STRAN,    &
+                  TIME, DTIME, TEMP, DTEMP, PREDEF, DPRED, CMNAME, NDI, &
+                  NSHR, COORDS, DROT, PNEWDT, CELENT, DFGRD0, DFGRD1,   &
+                  NOEL, NOEL, NPT, LAYER, KSPT, KSTEP, KINC
+      end if
 
       !-------------------------------------------------------------------
       ! SUBROUTINE START
@@ -919,7 +927,7 @@ contains
 
    end subroutine Eig_3a
 
-end module CamClay
+end module mod_UMAT_Cam_Clay
 
 
 
