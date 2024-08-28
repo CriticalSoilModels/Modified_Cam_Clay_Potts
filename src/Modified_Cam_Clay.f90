@@ -94,11 +94,14 @@ contains
          PROPS(NPROPS),COORDS(3),DROT(3,3),DFGRD0(3,3),DFGRD1(3,3)
 
       ! Userdefined parameters
-      real(kind = dp) :: xphics, xNu, xkappa, xlambda, xe0, zeta, xG, xK
-      real(kind = dp) :: pp, EpsP(6), FTOL
+      real(kind = dp) :: xphics, xNu, xkappa, xlambda, xG, xK
+      real(kind = dp) :: m_Hrov,xgamma,xN
+      real(kind = dp) :: pp,v, EpsP(6), FTOL
       real(kind = dp), dimension(6) :: Sig, dEps, dEpsP
-      integer(kind = i32) :: MaxIter, i
-
+      real(kind = dp) :: pwp,porosity,Bulk_Water
+      integer(kind = i32) :: MaxIter, i, status
+      character(len=100) :: output_file
+      logical :: file_exists
       
       ! Make sure all of the variables are used
       if (.False.) then
@@ -119,34 +122,68 @@ contains
       xNu = Props(2)
       xkappa = Props(3)
       xlambda = Props(4)
-      xe0 = Props(5)
+      xN = Props(5)
+      m_Hrov = Props(6)
+      xgamma = xN - ((xlambda-xkappa)*log(2.0))
+
       pp = STATEV(1)
+      v = STATEV(2)
+      pwp = STATEV(3)
       ! Accumulated plastic strains
       do i = 1,NTENS
-         EpsP(i) = STATEV(1+i)
+         EpsP(i) = STATEV(3+i)
       end do
       ! helping parameter
-      zeta = (xe0 + 1) / (xlambda - xkappa)
+
 
       ! Initialize stress and strain
       Sig=stress
       dEps=dstran
+      do i = 1, 3
+         dEps(i) = -dEps(i)
+      end do
+      
+      porosity = 0.6
+      Bulk_Water = 2100000
+      pwp =  pwp + ((Bulk_Water/porosity)*(dEps(1)+dEps(2)+dEps(3)))
+   
+      ! Diagnostics file for debugging (optional)
+      ! Make a file named diagnostics_output.txt in the folder or else you will have error 
+      ! Erase data in file before every run
+      output_file = 'diagnostics_output.txt' 
+      open(unit=10, file=output_file, status='old', action='write', position='append', iostat=status)
+      
+
+      if (status /= 0) then
+         print *, "Error opening file for writing."
+         stop
+      end if
+
+      ! Write header information
+      write(10, '(A)') "Diagnostics Output"
+      write(10, '(A)') "=================="
+
+      write(10, '(A, 6F10.5)') "Value of sig: ", Sig
+      write(10, '(A, 6F10.5)') "Value of axial strain: ", dEps
+
 
       !-------------------------------------------------------------------
       ! Do the predictor corrector scheme.
       ! The subroutine calculate the plastic and elastic parts and returns the updated stress and state variables
       ! Set tolerance for yield surface and the maximum iterations the algorithm can do
       ! Reccommended tolerance error (10-6 to 10-9)
-      FTOL = 1e-6
-      MaxIter = 100000
+      FTOL = 1e-3
+      MaxIter = 10
       call implicit_predictor_corrector_integration(xkappa,XNu,&
-         xe0,dEps,xphics,FTOL,MaxIter,zeta,Sig,EpsP,dEpsP,pp)
+      dEps,xphics,xlambda,m_Hrov, xgamma,xN,FTOL,MaxIter,Sig,EpsP,dEpsP,pp,v)
 
       !-------------------------------------------------------------------
       ! update state variables
       STATEV(1) = pp
+      STATEV(2) = v
+      STATEV(3) = pwp
       do i = 1,NTENS
-         STATEV(1+i) = EpsP(i)
+         STATEV(3+i) = EpsP(i)
       end do
       !-------------------------------------------------------------------
       ! if (isundr  ==  1) then        Calculation of pore pressure not needed because done outside the subroutine
@@ -156,8 +193,17 @@ contains
       !-------------------------------------------------------------------
       ! update stress and stiffness matrix
       stress=Sig
+
+      write(10, '(A, 6F10.5)') "Value of integrated stress at end: ", stress
+
       ! Calculate effective/elastic D-matrix
-      Call FormDEMCC(stress, xkappa, xNu, xe0, DDSDDE, 6, xG, xK)   ! also updates K and G
+      Call FormDEMCC(stress, xkappa,xNu, xN, xlambda, DDSDDE, 6, xG, xK) ! also updates K and G
+      write(10, '(A, F10.5)') "Value of G at end: ", xG
+      write(10, '(A, F10.5)') "Value of K at end: ", xK
+
+      write(10, '(A)') "End of step"
+      write(10, '(A)') "=================="
+      close(10)
 
    End SUBROUTINE UMAT
 
@@ -172,14 +218,14 @@ contains
    !	Subroutine for implicit stress estimate
    !-------------------------------------------------------------------
    subroutine implicit_predictor_corrector_integration(xkappa,XNu,&
-      xe0,dEps,xphics,FTOL,MaxIter,zeta,Sig,EpsP,dEpsP,pp)
+      dEps,xphics,xlambda,m_Hrov, xgamma,xN,FTOL,MaxIter,Sig,EpsP,dEpsP,pp,v)
       !-------------------------------------------------------------------
       !	input
       !        xkappa:         Slope of swelling line (U/R line) in e-ln(p') plane
       !           xNu:         Poisson's ratio
       !           xe0:         Initial void ratio
       !          dEps:         Strain increment
-      !        xphics:         Critical state angle of shearing resistance
+      !        xphics:         Critical state angle of shearing resistance, in radians
       !          FTOL:         Tolerence on the yield surface
       !       MaxIter:         Maximum iterations for the algorithm
       !          zeta:         (v / lambda + kappa)
@@ -216,29 +262,32 @@ contains
       !        result2:        dummy variable for calculations
       !        dlambda:        Lambda dot
       !              A:        Hardening/Softening parameter
+      !              v:        specific volume
 
       !-------------------------------------------------------------------
       implicit none
       ! Input variables
-      real(kind = dp),intent(in) :: xkappa,xNu,xe0,xphics,zeta,FTOL
+      real(kind = dp),intent(in) :: xkappa,xNu,xphics,FTOL
+      real(kind = dp),intent(in) :: xlambda,m_Hrov, xgamma,xN
       integer(kind = i32) :: MaxIter
       real(kind = dp), intent(in), dimension(6)  :: dEps
 
       ! Input/Output variables
       real(kind = dp), intent(inout), dimension(6)  :: Sig,EpsP
-      real(kind = dp), intent(inout)  :: pp
+      real(kind = dp), intent(inout)  :: pp,v
 
       ! Output variables
       real(kind = dp), intent(inout), dimension(6)  :: dEpsP
 
       ! Local variables
       real(kind = dp)  :: xK,xG,xN1(3),xN2(3),xN3(3),S1,S2,S3
-      real(kind = dp)  :: p,q,j,theta,F,dgdp,sqrt3
+      real(kind = dp)  :: p,q,j,theta,F,dgdp,sqrt3,zeta,beta
       real(kind = dp)  :: gtheta,result1(6),result2,dlambda,A
       real(kind = dp), dimension(6)  :: Sigu,EpsPu,dSigu
       real(kind = dp), dimension(6)  :: dfdsig,dgdsig
       real(kind = dp),dimension(6,6) :: D
       integer(kind = i32) :: iOpt,counter
+      logical :: check
 
       ! Initialization
       DEpsP = 0.0d0
@@ -247,11 +296,16 @@ contains
       !Store variables for updating
       Sigu = Sig
       EpsPu = EpsP
+      beta = 0.75
 
       ! Update G,K and evaluate D
-      Call FormDEMCC(Sigu, xkappa, xNu, xe0, D, 6, xG, xK)
+      Call FormDEMCC(Sigu, xkappa,xNu, xN, xlambda, D, 6, xG, xK)
+      write(10, '(A, F10.5)') "Value of G at start of imp func: ", xG
+      write(10, '(A, E10.5)') "Value of K at start of imp func: ", xK
 
       call MatVec(D, 6, dEps, 6, dSigu)
+
+      write(10, '(A, 6F10.5)') "Value of dSigu: ", dSigu
       Sigu = Sigu + dSigu
 
 
@@ -259,10 +313,24 @@ contains
       iOpt = 1
       call PrincipalSig(iOpt, Sigu, xN1, xN2, xN3, S1, S2, S3, p, q, &
          j, theta)
+         p = max(-p, 1.)
 
-      F = yield(p, j, pp, theta, xphics)
+      v = xN - (xlambda*(log(p)) )
+      zeta = v / (xlambda - xkappa) 
 
-      if (abs(F) < FTOL) then
+      write(10, '(A, F10.5)') "Value of p at start of imp func: ", p
+      write(10, '(A, F10.5)') "Value of j at start of imp func: ", j
+
+      if (p > (pp/2.0)) then
+         ! If p is greater than pp/2, then Modified Cam clay 
+         F = yield_MCC_log(p, j, pp, theta, xphics)
+      else 
+         F = yield_Hvor_log(p, j, pp, theta, xphics,m_Hrov, xgamma,xlambda,xkappa,xN)
+      end if
+      
+      write(10, '(A, E20.5)') "Value of F at start of imp func: ", F
+
+      if (F <= FTOL) then
          ! Prediction of the stress and strain values are correct and the values can be updated and returned
          ! Update Sig, EpsP, dEpsP
          Sig = Sigu
@@ -278,28 +346,72 @@ contains
 
       ! Initialize the counter keep check on the iterations
       counter = 0
+      check = .true.
 
-      do while(abs(F) >= FTOL .and. counter <= MaxIter)
+      do while(check .and. counter <= MaxIter)
 
-         ! Calc n_vec, m_vec
-         call derivatives(Sigu,p,j,xphics,theta,dgdp,dfdsig,dgdsig)
+         write(10, '(A, I5)') "Value of counter : ", counter
+         write(10, '(A, F10.5)') "Value of F before derivative: ", F
+         write(10, '(A, 6F10.5)') "Value of Sigu before derivative: ", Sigu
+         write(10, '(A, F10.5)') "Value of p before derivative:: ", p
+         write(10, '(A, F10.5)') "Value of j before derivative:: ", j
+         write(10, '(A, F10.5)') "Value of theta before derivative:: ", theta
+         write(10, '(A, F10.5)') "Value of pp before derivative:: ", pp
 
+      
+         if (p > (pp/2.0)) then
+               ! If p is greater than pp/2, then Modified Cam clay 
+            call derivatives_MCC_log(Sigu,p,j,xphics,theta,pp,dgdp,dfdsig,dgdsig)
+         else 
+            call derivatives_Hvorslev_log(Sigu,p,j,xphics,theta,pp,m_Hrov,xgamma, &
+                  xlambda,xkappa,xN,dgdp,dfdsig,dgdsig)
+
+         end if
+         
          ! Calculate A (make function later)
          sqrt3 = sqrt(3.0d0)
          gtheta = cos(theta) + ((sin(theta) * sin(xphics)) / sqrt3)
          gtheta = sin(xphics) / gtheta
-         A = zeta * (pp/(p**2))* (1 - (( j / (p*gtheta) )**2) )
+
+         if (p > (pp/2.0)) then
+            ! If p is greater than pp/2, then Modified Cam clay 
+            !A = zeta * (pp/(p**2))* (1 - (( j / (p*gtheta) )**2) )
+            A = zeta * (pp) * dgdp * (-(gtheta**2)*(p))
+            !A = (((gtheta**2)*pp)* ( ((gtheta**2)*(p**2)) - (3*(j**2))) ) &
+            !         / (xlambda-xkappa)  
+         else 
+            !A = ((v)/ xlambda) * exp((xgamma - xN - (xkappa*log(pp/p)))/ xlambda) &
+            !         * (pp/p) * (1 - (( j / (p*gtheta) )**2) )
+            !A = - A
+            A = (2.0*(1.0-beta)*(((gtheta**2)*(p**2)) - &
+                    (q**2)))/(xlambda*xkappa*p)        
+            A = zeta * dgdp * (1.0 - (xkappa/xlambda)) * (1.0-beta) 
+
+         end if
+
+         write(10, '(A, F10.5)') "Value of A:: ", A
 
          ! n * D * m = dfdsig * D * dgdsig
-         Call FormDEMCC(Sigu, xkappa, xNu, xe0, D, 6, xG, xK)
+         Call FormDEMCC(Sigu, xkappa,xNu, xN, xlambda, D, 6, xG, xK)
          result1 = matmul(D,dgdsig)
          result2 = dot_product(dfdsig, result1)
+
+         write(10, '(A, 6E15.5)') "Value of result1 before lambda:: ", result1
+         write(10, '(A, E15.5)') "Value of result2 before lambda:: ", result2
 
          ! dlambda
          dlambda = F / (result2 + A)
 
+         write(10, '(A, F10.5)') "Value of dlambda:: ", dlambda
+
+         write(10, '(A, 6F10.5)') "Value of Sigu:: ", Sigu
+
+         write(10, '(A, 6F10.5)') "Value of dlambda*result1:: ", dlambda*result1
+
          ! Update the stress
-         Sigu = Sigu - (dlambda*result1)
+         Sigu = Sigu + (dlambda*result1)
+
+         write(10, '(A, 6F10.5)') "Value of Sigu:: ", Sigu
 
          ! Acc plastic strain
          EpsPu = EpsPu + (dlambda * dgdsig)
@@ -307,11 +419,27 @@ contains
          ! Update the state parameters (pp)
          pp = pp * exp(zeta * dlambda * dgdp)
 
+         write(10, '(A, 6F10.5)') "Value of pp:: ", pp
+
          ! Calc the yield function value
          iOpt = 1
          call PrincipalSig(iOpt, Sigu, xN1, xN2, xN3, S1, S2, S3, p,&
             q,j,theta)
-         F = yield(p, j, pp, theta, xphics)
+         p = max(-p, 1.)
+         v = xN - (xlambda*(log(p)) )
+         !v = 0.5 + 1
+         zeta = v / (xlambda - xkappa)
+         
+         if (p > (pp/2.0)) then
+            ! If p is greater than pp/2, then Modified Cam clay 
+            F = yield_MCC_log(p, j, pp, theta, xphics)
+         else 
+            F = yield_Hvor_log(p, j, pp, theta, xphics,m_Hrov, xgamma, xlambda, xkappa, xN)
+         end if
+
+         if (F <= FTOL) then 
+            check = .false.
+         end if 
 
          ! Update the counter
          counter = counter + 1
@@ -335,7 +463,7 @@ contains
 
    !	Subroutine to form elastic D matrix
    !-------------------------------------------------------------------
-   Subroutine FormDEMCC(Sig0, xkappa,xNu, xe0, D, Id, xG, xK)
+   Subroutine FormDEMCC(Sig0, xkappa,xNu, xN, xlambda, D, Id, xG, xK)
       !-------------------------------------------------------------------
       !    Function:  To form the elastic material stiffness matrix for MCC model (Hooke)
       ! Inputs:
@@ -355,14 +483,17 @@ contains
       !                              o   o   o  o  o  G
       !-------------------------------------------------------------------
 
-      real(kind = dp) :: Sig0(6),xkappa,xNu, xe0, D, xG, xK
+      real(kind = dp) :: Sig0(6), D, xG, xK, v
+      real(kind = dp) ,intent(in) :: xNu,xN,xlambda,xkappa
       integer(kind = i32) :: Id, I,J
       Dimension D(Id,Id)
       real(kind = dp) :: p,r,FAC,D1,D2
 
       D = 0.0
       P = MAX(-(Sig0(1)+Sig0(2)+Sig0(3))/3., 1d0)
-      xK = (xe0 + 1)/xkappa * P  !bulk modulus at start of time step, assumed constant
+      v = xN - (xlambda*(log(P)))
+      !v = 0.5 +1
+      xK = ((v)/xkappa) * P  !bulk modulus at start of time step, assumed constant
       r = 3. * ( 1. - 2.*xNu) / ( 2. * (1.+xNu))
       xG = r*xK
       FAC= 2*xG / (1D0 - 2*xNU)
@@ -392,9 +523,9 @@ contains
 
 
    !-----------------------------------------------------------------------
-   ! Function computing the yield function
+   ! Function computing the yield function for MOdified cam clay 
    !-----------------------------------------------------------------------
-   function yield(p, j, pp, theta, xphics)
+   function yield_MCC(p, j, pp, theta, xphics)
       !-----------------------------------------------------------------------
       !  function: computing the yield function
       !
@@ -404,64 +535,199 @@ contains
       implicit none
 
       real(kind = dp) :: p, j, pp, theta, xphics, g_theta
-      real(kind = dp) :: yield
+      real(kind = dp) :: yield_MCC
+
+      !write(10, '(A, F10.5)') "Value of theta for F calculation: ", theta
+
+      g_theta = cos(theta) + ( (sin(theta) * sin(xphics)) / sqrt(3.0d0) )
+
+      !write(10, '(A, F10.5)') "Value of g_theta denominator for F calculation: ", g_theta
+
+      g_theta = sin(xphics) / g_theta
+
+      !write(10, '(A, F10.5)') "Value of g_theta for F calculation: ", g_theta
+
+      yield_MCC = ( j / (p*g_theta) )**2 - ((pp/p) - 1)
+
+      !write(10, '(A, F10.5)') "Value of yield for F calculation: ", yield
+
+   end function yield_MCC
+
+
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+
+   !-----------------------------------------------------------------------
+   ! Function computing the yield function for MOdified cam clay 
+   !-----------------------------------------------------------------------
+   function yield_MCC_log(p, j, pp, theta, xphics)
+      !-----------------------------------------------------------------------
+      !  function: computing the yield function
+      !
+      !  input:	p, q, pp, g_theta
+      !  output:	yield
+      !-----------------------------------------------------------------------
+      implicit none
+
+      real(kind = dp) :: p, j, pp, theta, xphics, g_theta
+      real(kind = dp) :: yield_MCC_log
+
+      !write(10, '(A, F10.5)') "Value of theta for F calculation: ", theta
+
+      g_theta = cos(theta) + ( (sin(theta) * sin(xphics)) / sqrt(3.0d0) )
+
+      !write(10, '(A, F10.5)') "Value of g_theta denominator for F calculation: ", g_theta
+
+      g_theta = sin(xphics) / g_theta
+
+      !write(10, '(A, F10.5)') "Value of g_theta for F calculation: ", g_theta
+
+      yield_MCC_log = ((j**2) / 3.0d0) - ((g_theta**2)*p*pp) + ((g_theta**2)*(p**2))
+
+      !write(10, '(A, F10.5)') "Value of yield for F calculation: ", yield
+
+   end function yield_MCC_log
+
+ 
+
+
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+
+
+   !-----------------------------------------------------------------------
+   ! Function computing the yield function for Hvorslev surface
+   !-----------------------------------------------------------------------
+   function yield_Hvor(p, j, pp, theta, xphics,m_Hrov, xgamma, xlambda, xkappa, xN)
+      !-----------------------------------------------------------------------
+      !  function: computing the yield function
+      !
+      !  input:	p, q, pp, g_theta, m_Hrov, xgamma, xlambda, xkappa, xN 
+      !  output:	yield
+      !-----------------------------------------------------------------------
+      implicit none
+
+      real(kind = dp) :: p, j, pp, theta, xphics, g_theta
+      real(kind = dp) :: m_Hrov, xgamma, xlambda, xkappa, xN 
+      real(kind = dp) :: yield_Hvor
+
+      !write(10, '(A, F10.5)') "Value of theta for F calculation: ", theta
+
+      g_theta = cos(theta) + ( (sin(theta) * sin(xphics)) / sqrt(3.0d0) )
+
+      !write(10, '(A, F10.5)') "Value of g_theta denominator for F calculation: ", g_theta
+
+      g_theta = sin(xphics) / g_theta
+
+      !write(10, '(A, F10.5)') "Value of g_theta for F calculation: ", g_theta
+
+      yield_Hvor = ( j / (g_theta - m_Hrov) ) - (( m_Hrov / (g_theta - m_Hrov) )* p ) &
+                - (pp*(exp((xgamma - xN)/xlambda))*(exp((-xkappa/xlambda)*log(pp/p))))
+
+      !write(10, '(A, F10.5)') "Value of yield for F calculation: ", yield
+
+   end function yield_Hvor
+
+
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+
+   !-----------------------------------------------------------------------
+   ! Function computing the yield function for Hvorslev surface
+   !-----------------------------------------------------------------------
+   function yield_Hvor_log(p, j, pp, theta, xphics,m_Hrov, xgamma, xlambda, xkappa, xN)
+      !-----------------------------------------------------------------------
+      !  function: computing the yield function
+      !
+      !  input:	p, q, pp, g_theta, m_Hrov, xgamma, xlambda, xkappa, xN 
+      !  output:	yield
+      !-----------------------------------------------------------------------
+      implicit none
+
+      real(kind = dp) :: p, j, pp, theta, xphics, g_theta
+      real(kind = dp) :: m_Hrov, xgamma, xlambda, xkappa, xN, beta
+      real(kind = dp) :: yield_Hvor_log
+      beta = 0.75 
 
       g_theta = cos(theta) + ( (sin(theta) * sin(xphics)) / sqrt(3.0d0) )
       g_theta = sin(xphics) / g_theta
+      yield_Hvor_log = log( (j*sqrt(3.0)) / (g_theta) ) - &
+                     ((beta + ((xkappa/xlambda)*(1.0-beta)))*log(p)) - &
+                     ((1.0-(xkappa/xlambda))*(1.0-beta)*log(pp/2.0))
 
-      yield = ( j / (p*g_theta) )**2 - ((pp/p) - 1)
+      !write(10, '(A, F10.5)') "Value of yield for F calculation: ", yield
 
-   end function yield
-
-
-   !-------------------------------------------------------------------
-   !-------------------------------------------------------------------
-   !-------------------------------------------------------------------
-   !-------------------------------------------------------------------
-   !-------------------------------------------------------------------
+   end function yield_Hvor_log
 
 
    !-----------------------------------------------------------------------
    ! Subroutine computing the derivatives
    !-----------------------------------------------------------------------
-   subroutine derivatives(sig,p,j,xphics,theta,dgdp,dfdsig,dgdsig)
+   subroutine derivatives_MCC(sig,p,j,xphics,theta,pp,dgdp,dfdsig,dgdsig)
       !-----------------------------------------------------------------------
       !	input:	sig,p,j,xphics,theta
       !	output:	dfdsig,dgdsig
       !-----------------------------------------------------------------------
       implicit none
-      real(kind = dp), intent(in)  :: p, j, xphics, theta
-      real(kind = dp), intent(in), dimension(6)  :: sig
+      real(kind = dp), intent(in)  :: p, j, xphics, theta, pp
       real(kind = dp), intent(out), dimension(6) :: dfdsig,dgdsig
       real(kind = dp), intent(out) :: dgdp
 
       ! Local Variables
+      real(kind = dp), dimension(6)  :: sig
       real(kind = dp) :: g_theta,dfdp,dfdj,dfdtheta
-      real(kind = dp) :: dgdj,dgdtheta,dets
+      real(kind = dp) :: dgdj,dgdtheta,dets,theta2
       real(kind = dp) :: dummy1,dummy2,dummy3,dummy4,dummy5,dummy6
       real(kind = dp), dimension(6)  :: dpdsig,djdsig,d_dets_dsig,dthetadsig
+      integer(kind = i32) :: i
+
+      
+      do i = 1, 3
+         sig(i) = -sig(i)
+      end do 
 
       g_theta = cos(theta) + ((sin(theta) * sin(xphics)) / sqrt(3.0d0))
       g_theta = sin(xphics) / g_theta
+      write(10, '(A, F10.5)') "Value of g_theta in derivative fn:: ", g_theta
 
       dfdp = (1/p) * ( 1 - ( ( j / (p*g_theta) )**2) )
+      !dfdp = (1/p) * ( (pp/p) - (2.0d0 * ( j / (p*g_theta) )**2) )
+      !dfdp = -(((g_theta)**2)*pp) + (2.0d0*((g_theta)**2)*p)
       dfdj = (2*j) / ((p*g_theta)**2)
+      !dfdj = (2*j)
       dfdtheta = (2*(j**2)) / (sqrt(3.0d0)*(p**2)*g_theta*(sin(xphics)))
       dfdtheta = dfdtheta * ( (cos(theta)*sin(xphics)) - sin(theta))
 
-      dgdp = (1/p) * ( 1 - ( j / (p*g_theta) ) )
+      write(10, '(A, F10.5)') "Value of dfdp in derivative fn:: ", dfdp
+      write(10, '(A, F10.5)') "Value of dfdj in derivative fn:: ", dfdj
+      write(10, '(A, E15.5)') "Value of dfdtheta in derivative fn:: ", dfdtheta
+
+      dgdp = (1/p) * ( 1 - ( ( j / (p*g_theta) )**2) )
+      !dgdp = (1/p) * ( (pp/p) - (2.0d0 * ( j / (p*g_theta) )**2) )
+      !dgdp = -(((g_theta)**2)*pp) + (2.0d0*((g_theta)**2)*p)
       dgdj = (2*j) / ((p*g_theta)**2)
+      !dgdj = (2*j)
       dgdtheta = 0
+
+      write(10, '(A, F10.5)') "Value of dgdp in derivative fn:: ", dgdp
+      write(10, '(A, F10.5)') "Value of dgdj in derivative fn:: ", dgdj
+      write(10, '(A, F10.5)') "Value of dgdtheta in derivative fn:: ", dgdtheta
+
 
       dpdsig = 0.33333333d0*[1.0d0,1.0d0,1.0d0,0.0d0,0.0d0,0.0d0]
       djdsig = (1/(2*j))*[sig(1)-p, sig(2)-p, sig(3)-p, 2*sig(4), &
          2*sig(5), 2*sig(6)]
-      d_dets_dsig = [ (((sig(2)-p)*(sig(3)-p)) - (sig(5)**2) ), &
-         (((sig(1)-p)*(sig(3)-p)) - (sig(6)**2) ), &
-         (((sig(1)-p)*(sig(2)-p)) - (sig(4)**2) ), &
-         (( 2* sig(4) * (p-sig(3)) ) + (2*sig(5)*sig(6)) ), &
-         (( 2* sig(5) * (p-sig(1)) ) + (2*sig(4)*sig(6)) ), &
-         (( 2* sig(6) * (p-sig(2)) ) + (2*sig(4)*sig(5)) ) ]
+
+      write(10, '(A, 6F10.5)') "Value of djdsig in derivative fn:: ", djdsig   
 
       dummy1 = (2*sig(1))-sig(2)-sig(3)   
       dummy2 = (2*sig(2))-sig(1)-sig(3)  
@@ -470,25 +736,456 @@ contains
       dummy5 = (2*(sig(5)**2) -(sig(4)**2) -(sig(6)**2))
       dummy6 = (2*(sig(6)**2) -(sig(5)**2) -(sig(4)**2))
 
-      d_dets_dsig = [ ((2/27)*dummy2*dummy3) + ((1/27)*(dummy1**2)) - (1/3)*(dummy5), &
-      ((2/27)*dummy3*dummy1) + ((1/27)*(dummy1**2)) - (1/3)*(dummy6), &
-      ((2/27)*dummy1*dummy2) + ((1/27)*(dummy1**3)) - (1/3)*(dummy4), &
-      (-(2/3)*sig(4)*dummy3) + (sig(5)*sig(6)), &
-      (-(2/3)*sig(5)*dummy1) + (sig(4)*sig(6)),&
-      (-(2/3)*sig(6)*dummy2) + (sig(5)*sig(4)) ]
+      write(10, '(A, E15.5)') "Value of dummy1 in derivative fn:: ", dummy1
+      write(10, '(A, E15.5)') "Value of dummy2 in derivative fn:: ", dummy2
+      write(10, '(A, E15.5)') "Value of dummy3 in derivative fn:: ", dummy3
 
-      dets = ((sig(1)-p)*(sig(2)-p)*(sig(3)-p)) - ((sig(1)-p)*(sig(5)**2)) &
-         - ((sig(2)-p)*(sig(6)**2)) - ((sig(3)-p)*(sig(4)**2)) &
-         + (2*sig(4)*sig(5)*sig(6))
-      dthetadsig = (((dets/j)*djdsig) - d_dets_dsig) * (sqrt(3.0d0)/2)
-      dthetadsig = dthetadsig / (cos((3.0d0)*theta)*(j**3))
+      d_dets_dsig = [ ((2.0/27.0)*dummy2*dummy3) + ((1.0/27.0)*(dummy1**2)) - (1.0/3.0)*(dummy5), &
+      ((2.0/27.0)*dummy3*dummy1) + ((1.0/27.0)*(dummy2**2)) - (1.0/3.0)*(dummy6), &
+      ((2.0/27.0)*dummy1*dummy2) + ((1.0/27.0)*(dummy3**2)) - (1.0/3.0)*(dummy4), &
+      (-(2.0/3.0)*sig(4)*dummy3) + (sig(5)*sig(6)), &
+      (-(2.0/3.0)*sig(5)*dummy1) + (sig(4)*sig(6)),&
+      (-(2.0/3.0)*sig(6)*dummy2) + (sig(5)*sig(4)) ]
+
+
+      write(10, '(A, 6E15.5)') "Value of d_dets_dsig in derivative fn:: ", d_dets_dsig
+
+      dets = ((sig(1)-p)*(sig(2)-p)*(sig(3)-p)) - ((sig(1)-p)*(sig(5)**2)) 
+      dets =  dets  - ((sig(2)-p)*(sig(6)**2)) - ((sig(3)-p)*(sig(4)**2)) 
+      dets = dets   + (2.0*sig(4)*sig(5)*sig(6))
+      write(10, '(A, E15.5)') "Value of dets in derivative fn:: ", dets
+      
+      dthetadsig = (((dets/j)*djdsig) ) 
+      dthetadsig = 4*(((dets/j)*djdsig) ) 
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      ! dthetadsig = (dthetadsig - d_dets_dsig) 
+      dthetadsig = ( d_dets_dsig - dthetadsig)
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      !dthetadsig = dthetadsig * (sqrt(3.0d0)/2.0)
+      dthetadsig = dthetadsig * (2.0/sqrt(3.0d0)) * (j**4)
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      !write(10, '(A, E15.5)') "Value of dthetadsig in derivative fn:: ", cos(3.0*theta2)
+      !write(10, '(A, E15.5)') "Value of dthetadsig in derivative fn:: ", theta2
+      !write(10, '(A, E15.5)') "Value of dthetadsig in derivative fn:: ", 3.0*theta2
+      !write(10, '(A, E15.5)') "Value of dthetadsig in derivative fn:: ", cos(3.0*theta2)*(j**3)
+
+
+      !dthetadsig = dthetadsig / (cos(3.0*theta2)*(j**3))
+      dthetadsig = dthetadsig / ((3.0*(j**8)) + (2.0*(dets**2)))
+      
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
 
       dfdsig = (dfdp * dpdsig) + (dfdj * djdsig) + (dfdtheta * dthetadsig)
 
+      write(10, '(A, 6E15.5)') "Value of dfdsig in derivative fn:: ", dfdsig
+
       dgdsig = (dgdp * dpdsig) + (dgdj * djdsig) + (dgdtheta * dthetadsig)
 
-   end subroutine derivatives
+      write(10, '(A, 6E15.5)') "Value of dgdsig in derivative fn:: ", dgdsig
 
+      do i = 1, 3
+         sig(i) = -sig(i)
+      end do 
+
+   end subroutine derivatives_MCC
+
+
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+
+   !-----------------------------------------------------------------------
+   ! Subroutine computing the derivatives
+   !-----------------------------------------------------------------------
+   subroutine derivatives_MCC_log(sig,p,j,xphics,theta,pp,dgdp,dfdsig,dgdsig)
+      !-----------------------------------------------------------------------
+      !	input:	sig,p,j,xphics,theta
+      !	output:	dfdsig,dgdsig
+      !-----------------------------------------------------------------------
+      implicit none
+      real(kind = dp), intent(in)  :: p, j, xphics, theta, pp
+      real(kind = dp), intent(out), dimension(6) :: dfdsig,dgdsig
+      real(kind = dp), intent(out) :: dgdp
+
+      ! Local Variables
+      real(kind = dp), dimension(6)  :: sig
+      real(kind = dp) :: g_theta,dfdp,dfdj,dfdtheta
+      real(kind = dp) :: dgdj,dgdtheta,dets,theta2
+      real(kind = dp) :: dummy1,dummy2,dummy3,dummy4,dummy5,dummy6
+      real(kind = dp), dimension(6)  :: dpdsig,djdsig,d_dets_dsig,dthetadsig
+      integer(kind = i32) :: i
+
+      
+      do i = 1, 3
+         sig(i) = -sig(i)
+      end do 
+
+      g_theta = cos(theta) + ((sin(theta) * sin(xphics)) / sqrt(3.0d0))
+      g_theta = sin(xphics) / g_theta
+      write(10, '(A, F10.5)') "Value of g_theta in derivative fn:: ", g_theta
+
+      dfdp = ((g_theta)**2)*((2.0*p)-pp)
+      dfdj = (2*j)/3
+      dfdtheta = (2*g_theta*p)*(-pp+p)*(g_theta**2)
+      dfdtheta = dfdtheta * ( ((cos(theta)*sin(xphics))/sqrt(3.0d0)) - sin(theta))
+
+      write(10, '(A, F10.5)') "Value of dfdp in derivative fn:: ", dfdp
+      write(10, '(A, F10.5)') "Value of dfdj in derivative fn:: ", dfdj
+      write(10, '(A, E15.5)') "Value of dfdtheta in derivative fn:: ", dfdtheta
+
+      dgdp = ((g_theta)**2)*((2.0*p)-pp)
+      dgdj = (2*j)/3
+      dgdtheta = 0
+
+      write(10, '(A, F10.5)') "Value of dgdp in derivative fn:: ", dgdp
+      write(10, '(A, F10.5)') "Value of dgdj in derivative fn:: ", dgdj
+      write(10, '(A, F10.5)') "Value of dgdtheta in derivative fn:: ", dgdtheta
+
+
+      dpdsig = 0.33333333d0*[1.0d0,1.0d0,1.0d0,0.0d0,0.0d0,0.0d0]
+      djdsig = (1/(2*j))*[sig(1)-p, sig(2)-p, sig(3)-p, 2*sig(4), &
+         2*sig(5), 2*sig(6)]
+
+      write(10, '(A, 6F10.5)') "Value of djdsig in derivative fn:: ", djdsig   
+
+      dummy1 = (2*sig(1))-sig(2)-sig(3)   
+      dummy2 = (2*sig(2))-sig(1)-sig(3)  
+      dummy3 = (2*sig(3))-sig(1)-sig(2)  
+      dummy4 = (2*(sig(4)**2) -(sig(5)**2) -(sig(6)**2))
+      dummy5 = (2*(sig(5)**2) -(sig(4)**2) -(sig(6)**2))
+      dummy6 = (2*(sig(6)**2) -(sig(5)**2) -(sig(4)**2))
+
+      write(10, '(A, E15.5)') "Value of dummy1 in derivative fn:: ", dummy1
+      write(10, '(A, E15.5)') "Value of dummy2 in derivative fn:: ", dummy2
+      write(10, '(A, E15.5)') "Value of dummy3 in derivative fn:: ", dummy3
+
+      d_dets_dsig = [ ((2.0/27.0)*dummy2*dummy3) + ((1.0/27.0)*(dummy1**2)) - (1.0/3.0)*(dummy5), &
+      ((2.0/27.0)*dummy3*dummy1) + ((1.0/27.0)*(dummy2**2)) - (1.0/3.0)*(dummy6), &
+      ((2.0/27.0)*dummy1*dummy2) + ((1.0/27.0)*(dummy3**2)) - (1.0/3.0)*(dummy4), &
+      (-(2.0/3.0)*sig(4)*dummy3) + (sig(5)*sig(6)), &
+      (-(2.0/3.0)*sig(5)*dummy1) + (sig(4)*sig(6)),&
+      (-(2.0/3.0)*sig(6)*dummy2) + (sig(5)*sig(4)) ]
+
+
+      write(10, '(A, 6E15.5)') "Value of d_dets_dsig in derivative fn:: ", d_dets_dsig
+
+      dets = ((sig(1)-p)*(sig(2)-p)*(sig(3)-p)) - ((sig(1)-p)*(sig(5)**2)) 
+      dets =  dets  - ((sig(2)-p)*(sig(6)**2)) - ((sig(3)-p)*(sig(4)**2)) 
+      dets = dets   + (2.0*sig(4)*sig(5)*sig(6))
+      write(10, '(A, E15.5)') "Value of dets in derivative fn:: ", dets
+      
+      dthetadsig = (((dets/j)*djdsig) ) 
+      dthetadsig = 4*(((dets/j)*djdsig) ) 
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      ! dthetadsig = (dthetadsig - d_dets_dsig) 
+      dthetadsig = ( d_dets_dsig - dthetadsig)
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      !dthetadsig = dthetadsig * (sqrt(3.0d0)/2.0)
+      dthetadsig = dthetadsig * (2.0/sqrt(3.0d0)) * (j**4)
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      !write(10, '(A, E15.5)') "Value of dthetadsig in derivative fn:: ", cos(3.0*theta2)
+      !write(10, '(A, E15.5)') "Value of dthetadsig in derivative fn:: ", theta2
+      !write(10, '(A, E15.5)') "Value of dthetadsig in derivative fn:: ", 3.0*theta2
+      !write(10, '(A, E15.5)') "Value of dthetadsig in derivative fn:: ", cos(3.0*theta2)*(j**3)
+
+
+      !dthetadsig = dthetadsig / (cos(3.0*theta2)*(j**3))
+      dthetadsig = dthetadsig / ((3.0*(j**8)) + (2.0*(dets**2)))
+      
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      dfdsig = (dfdp * dpdsig) + (dfdj * djdsig) + (dfdtheta * dthetadsig)
+
+      write(10, '(A, 6E15.5)') "Value of dfdsig in derivative fn:: ", dfdsig
+
+      dgdsig = (dgdp * dpdsig) + (dgdj * djdsig) + (dgdtheta * dthetadsig)
+
+      write(10, '(A, 6E15.5)') "Value of dgdsig in derivative fn:: ", dgdsig
+
+      do i = 1, 3
+         sig(i) = -sig(i)
+      end do 
+
+   end subroutine derivatives_MCC_log
+
+
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+
+   !-----------------------------------------------------------------------
+   ! Subroutine computing the derivatives
+   !-----------------------------------------------------------------------
+   subroutine derivatives_Hvorslev(sig,p,j,xphics,theta,pp,m_Hvor,xgamma, &
+      xlambda,xkappa,xN,dgdp,dfdsig,dgdsig)
+      !-----------------------------------------------------------------------
+      !	input:	sig,p,j,xphics,theta,pp,m_Hvor,xgamma,xlambda,xkappa,xN
+      !	output:	dgdp,dfdsig,dgdsig
+      !-----------------------------------------------------------------------
+      implicit none
+      real(kind = dp), intent(in)  :: p, j, xphics, theta, pp
+      real(kind = dp), intent(in)  :: m_Hvor,xgamma,xlambda,xkappa,xN
+      real(kind = dp), intent(out), dimension(6) :: dfdsig,dgdsig
+      real(kind = dp), intent(out) :: dgdp
+
+      ! Local Variables
+      real(kind = dp), dimension(6)  :: sig
+      real(kind = dp) :: g_theta,dfdp,dfdj,dfdtheta
+      real(kind = dp) :: dgdj,dgdtheta,dets,theta2
+      real(kind = dp) :: dummy1,dummy2,dummy3,dummy4,dummy5,dummy6
+      real(kind = dp), dimension(6)  :: dpdsig,djdsig,d_dets_dsig,dthetadsig
+      integer(kind = i32) :: i
+
+      
+      do i = 1, 3
+         sig(i) = -sig(i)
+      end do 
+
+      g_theta = cos(theta) + ((sin(theta) * sin(xphics)) / sqrt(3.0d0))
+      g_theta = sin(xphics) / g_theta
+      write(10, '(A, F10.5)') "Value of g_theta in derivative fn:: ", g_theta
+
+      dfdp = -(m_Hvor/(g_theta-m_Hvor)) - &
+      ((xkappa/xlambda)*(1/p)*(exp((xgamma - xN)/xlambda))*(exp((-xkappa/xlambda)*(log(pp/p)))))
+
+      dfdj = (1/(g_theta-m_Hvor))
+
+      dfdtheta = ((j-m_Hvor)/((g_theta-m_Hvor)**2))*(g_theta**2)*(1/sin(xphics))
+      dfdtheta = dfdtheta * ( ((cos(theta)*sin(xphics))/sqrt(3.0)) - sin(theta))
+
+      write(10, '(A, F10.5)') "Value of dfdp in derivative fn:: ", dfdp
+      write(10, '(A, F10.5)') "Value of dfdj in derivative fn:: ", dfdj
+      write(10, '(A, E15.5)') "Value of dfdtheta in derivative fn:: ", dfdtheta
+
+      dgdp = (1/p) * ( 1 - ( ( j / (p*g_theta) )**2) )
+      dgdj = (2*j) / ((p*g_theta)**2)
+      dgdtheta = 0
+
+      write(10, '(A, F10.5)') "Value of dgdp in derivative fn:: ", dgdp
+      write(10, '(A, F10.5)') "Value of dgdj in derivative fn:: ", dgdj
+      write(10, '(A, F10.5)') "Value of dgdtheta in derivative fn:: ", dgdtheta
+
+
+      dpdsig = 0.33333333d0*[1.0d0,1.0d0,1.0d0,0.0d0,0.0d0,0.0d0]
+      djdsig = (1/(2*j))*[sig(1)-p, sig(2)-p, sig(3)-p, 2*sig(4), &
+         2*sig(5), 2*sig(6)]
+
+      write(10, '(A, 6F10.5)') "Value of djdsig in derivative fn:: ", djdsig   
+
+      dummy1 = (2*sig(1))-sig(2)-sig(3)   
+      dummy2 = (2*sig(2))-sig(1)-sig(3)  
+      dummy3 = (2*sig(3))-sig(1)-sig(2)  
+      dummy4 = (2*(sig(4)**2) -(sig(5)**2) -(sig(6)**2))
+      dummy5 = (2*(sig(5)**2) -(sig(4)**2) -(sig(6)**2))
+      dummy6 = (2*(sig(6)**2) -(sig(5)**2) -(sig(4)**2))
+
+      write(10, '(A, E15.5)') "Value of dummy1 in derivative fn:: ", dummy1
+      write(10, '(A, E15.5)') "Value of dummy2 in derivative fn:: ", dummy2
+      write(10, '(A, E15.5)') "Value of dummy3 in derivative fn:: ", dummy3
+
+      d_dets_dsig = [ ((2.0/27.0)*dummy2*dummy3) + ((1.0/27.0)*(dummy1**2)) - (1.0/3.0)*(dummy5), &
+      ((2.0/27.0)*dummy3*dummy1) + ((1.0/27.0)*(dummy2**2)) - (1.0/3.0)*(dummy6), &
+      ((2.0/27.0)*dummy1*dummy2) + ((1.0/27.0)*(dummy3**2)) - (1.0/3.0)*(dummy4), &
+      (-(2.0/3.0)*sig(4)*dummy3) + (sig(5)*sig(6)), &
+      (-(2.0/3.0)*sig(5)*dummy1) + (sig(4)*sig(6)),&
+      (-(2.0/3.0)*sig(6)*dummy2) + (sig(5)*sig(4)) ]
+
+
+      write(10, '(A, 6E15.5)') "Value of d_dets_dsig in derivative fn:: ", d_dets_dsig
+
+      dets = ((sig(1)-p)*(sig(2)-p)*(sig(3)-p)) - ((sig(1)-p)*(sig(5)**2)) 
+      dets =  dets  - ((sig(2)-p)*(sig(6)**2)) - ((sig(3)-p)*(sig(4)**2)) 
+      dets = dets   + (2.0*sig(4)*sig(5)*sig(6))
+      write(10, '(A, E15.5)') "Value of dets in derivative fn:: ", dets
+      
+      dthetadsig = (((dets/j)*djdsig) ) 
+      dthetadsig = 4*(((dets/j)*djdsig) ) 
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      ! dthetadsig = (dthetadsig - d_dets_dsig) 
+      dthetadsig = ( d_dets_dsig - dthetadsig)
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      !dthetadsig = dthetadsig * (sqrt(3.0d0)/2.0)
+      dthetadsig = dthetadsig * (2.0/sqrt(3.0d0)) * (j**4)
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      !dthetadsig = dthetadsig / (cos(3.0*theta2)*(j**3))
+      dthetadsig = dthetadsig / ((3.0*(j**8)) + (2.0*(dets**2)))
+      
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      dfdsig = (dfdp * dpdsig) + (dfdj * djdsig) + (dfdtheta * dthetadsig)
+
+      write(10, '(A, 6E15.5)') "Value of dfdsig in derivative fn:: ", dfdsig
+
+      dgdsig = (dgdp * dpdsig) + (dgdj * djdsig) + (dgdtheta * dthetadsig)
+
+      write(10, '(A, 6E15.5)') "Value of dgdsig in derivative fn:: ", dgdsig
+
+      do i = 1, 3
+         sig(i) = -sig(i)
+      end do 
+
+   end subroutine derivatives_Hvorslev
+   
+
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+
+   !-----------------------------------------------------------------------
+   ! Subroutine computing the derivatives
+   !-----------------------------------------------------------------------
+   subroutine derivatives_Hvorslev_log(sig,p,j,xphics,theta,pp,m_Hvor,xgamma, &
+      xlambda,xkappa,xN,dgdp,dfdsig,dgdsig)
+      !-----------------------------------------------------------------------
+      !	input:	sig,p,j,xphics,theta,pp,m_Hvor,xgamma,xlambda,xkappa,xN
+      !	output:	dgdp,dfdsig,dgdsig
+      !-----------------------------------------------------------------------
+      implicit none
+      real(kind = dp), intent(in)  :: p, j, xphics, theta, pp
+      real(kind = dp), intent(in)  :: m_Hvor,xgamma,xlambda,xkappa,xN
+      real(kind = dp), intent(out), dimension(6) :: dfdsig,dgdsig
+      real(kind = dp), intent(out) :: dgdp
+
+      ! Local Variables
+      real(kind = dp), dimension(6)  :: sig
+      real(kind = dp) :: g_theta,dfdp,dfdj,dfdtheta,beta
+      real(kind = dp) :: dgdj,dgdtheta,dets,theta2
+      real(kind = dp) :: dummy1,dummy2,dummy3,dummy4,dummy5,dummy6
+      real(kind = dp), dimension(6)  :: dpdsig,djdsig,d_dets_dsig,dthetadsig
+      integer(kind = i32) :: i
+
+      
+      do i = 1, 3
+         sig(i) = -sig(i)
+      end do 
+
+      g_theta = cos(theta) + ((sin(theta) * sin(xphics)) / sqrt(3.0d0))
+      g_theta = sin(xphics) / g_theta
+      write(10, '(A, F10.5)') "Value of g_theta in derivative fn:: ", g_theta
+
+      beta = 0.75 
+
+      dfdp = -(beta + ((xkappa/xlambda)*(1-beta))  ) * (1/p)   
+
+      dfdj = (1/(j))
+
+      dfdtheta = -g_theta*(1/sin(xphics))
+      dfdtheta = dfdtheta * ( ((cos(theta)*sin(xphics))/sqrt(3.0)) - sin(theta))
+
+      write(10, '(A, F10.5)') "Value of dfdp in derivative fn:: ", dfdp
+      write(10, '(A, F10.5)') "Value of dfdj in derivative fn:: ", dfdj
+      write(10, '(A, E15.5)') "Value of dfdtheta in derivative fn:: ", dfdtheta
+
+      
+      dgdp = ((g_theta)**2)*((2.0*p)-pp)
+      dgdj = (2*j)/3
+      dgdtheta = 0
+
+      write(10, '(A, F10.5)') "Value of dgdp in derivative fn:: ", dgdp
+      write(10, '(A, F10.5)') "Value of dgdj in derivative fn:: ", dgdj
+      write(10, '(A, F10.5)') "Value of dgdtheta in derivative fn:: ", dgdtheta
+
+
+      dpdsig = 0.33333333d0*[1.0d0,1.0d0,1.0d0,0.0d0,0.0d0,0.0d0]
+      djdsig = (1/(2*j))*[sig(1)-p, sig(2)-p, sig(3)-p, 2*sig(4), &
+         2*sig(5), 2*sig(6)]
+
+      write(10, '(A, 6F10.5)') "Value of djdsig in derivative fn:: ", djdsig   
+
+      dummy1 = (2*sig(1))-sig(2)-sig(3)   
+      dummy2 = (2*sig(2))-sig(1)-sig(3)  
+      dummy3 = (2*sig(3))-sig(1)-sig(2)  
+      dummy4 = (2*(sig(4)**2) -(sig(5)**2) -(sig(6)**2))
+      dummy5 = (2*(sig(5)**2) -(sig(4)**2) -(sig(6)**2))
+      dummy6 = (2*(sig(6)**2) -(sig(5)**2) -(sig(4)**2))
+
+      write(10, '(A, E15.5)') "Value of dummy1 in derivative fn:: ", dummy1
+      write(10, '(A, E15.5)') "Value of dummy2 in derivative fn:: ", dummy2
+      write(10, '(A, E15.5)') "Value of dummy3 in derivative fn:: ", dummy3
+
+      d_dets_dsig = [ ((2.0/27.0)*dummy2*dummy3) + ((1.0/27.0)*(dummy1**2)) - (1.0/3.0)*(dummy5), &
+      ((2.0/27.0)*dummy3*dummy1) + ((1.0/27.0)*(dummy2**2)) - (1.0/3.0)*(dummy6), &
+      ((2.0/27.0)*dummy1*dummy2) + ((1.0/27.0)*(dummy3**2)) - (1.0/3.0)*(dummy4), &
+      (-(2.0/3.0)*sig(4)*dummy3) + (sig(5)*sig(6)), &
+      (-(2.0/3.0)*sig(5)*dummy1) + (sig(4)*sig(6)),&
+      (-(2.0/3.0)*sig(6)*dummy2) + (sig(5)*sig(4)) ]
+
+
+      write(10, '(A, 6E15.5)') "Value of d_dets_dsig in derivative fn:: ", d_dets_dsig
+
+      dets = ((sig(1)-p)*(sig(2)-p)*(sig(3)-p)) - ((sig(1)-p)*(sig(5)**2)) 
+      dets =  dets  - ((sig(2)-p)*(sig(6)**2)) - ((sig(3)-p)*(sig(4)**2)) 
+      dets = dets   + (2.0*sig(4)*sig(5)*sig(6))
+      write(10, '(A, E15.5)') "Value of dets in derivative fn:: ", dets
+      
+      dthetadsig = (((dets/j)*djdsig) ) 
+      dthetadsig = 4*(((dets/j)*djdsig) ) 
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      ! dthetadsig = (dthetadsig - d_dets_dsig) 
+      dthetadsig = ( d_dets_dsig - dthetadsig)
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      !dthetadsig = dthetadsig * (sqrt(3.0d0)/2.0)
+      dthetadsig = dthetadsig * (2.0/sqrt(3.0d0)) * (j**4)
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      !dthetadsig = dthetadsig / (cos(3.0*theta2)*(j**3))
+      dthetadsig = dthetadsig / ((3.0*(j**8)) + (2.0*(dets**2)))
+      
+
+      write(10, '(A, 6E15.5)') "Value of dthetadsig in derivative fn:: ", dthetadsig
+
+      dfdsig = (dfdp * dpdsig) + (dfdj * djdsig) + (dfdtheta * dthetadsig)
+
+      write(10, '(A, 6E15.5)') "Value of dfdsig in derivative fn:: ", dfdsig
+
+      dgdsig = (dgdp * dpdsig) + (dgdj * djdsig) + (dgdtheta * dthetadsig)
+
+      write(10, '(A, 6E15.5)') "Value of dgdsig in derivative fn:: ", dgdsig
+
+      do i = 1, 3
+         sig(i) = -sig(i)
+      end do 
+
+   end subroutine derivatives_Hvorslev_log
+
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   !-------------------------------------------------------------------
+   
 
    !-----------------------------------------------------------------------
    ! Subroutine computing the material stiffness parameters
@@ -737,6 +1434,12 @@ contains
       Q = sqrt( ( (S1 - S2)**2 + (S2 - S3)**2 + (S3 - S1)**2 ) / 2. )
       J = Q /sqrt(3.0d0)
       theta = atan( (1/sqrt(3.0d0)) * ( ( (2*(S2-S3)) / (S1-S3) ) - 1. ) )
+      ! if hyrostatic then theta (Load angle) is not defined. 
+      ! Since J2 is also zero, make g(theta) be some dummy value - doesnt matter for F 
+
+      if (S1 == S2 .and. S2 == S3) then
+         theta = 0 
+      end if 
 
       ! Sort eigenvalues S1 <= S2 <= S3
       iS1 = 1
