@@ -439,7 +439,9 @@ PROGRAM that_calls_umat   ! written by  A.Niemunis  2007 - 2023
                keywords(3) ='*Cartesian'
                call ReadStepCommons(1,ninc,maxiter,deltaTime,deltaTemp,every)    ! AN 2016   read(1,*) ninc, maxiter, deltaTime ! AN 2023 temperat
                read(1,*) deltaLoad(1)
-               ifstress(2:3) = 1
+               ! TODO: Note commenting out the below line to see if this causes the iterations to go away and the solution to converge correctly
+               ! WaveHello : 08/28/2024
+               ! ifstress(2:3) = 1
                goto 10
             endif
             if(keywords(2) == '*TriaxialS1') then
@@ -452,8 +454,8 @@ PROGRAM that_calls_umat   ! written by  A.Niemunis  2007 - 2023
             endif
             if(keywords(2) == '*TriaxialUEq') then
                keywords(2) = '*LinearLoad'
-               call ReadStepCommons(1,ninc,maxiter,deltaTime,deltaTemp,every)    ! AN 2016   read(1,*) ninc, maxiter, deltaTime ! AN 2023 temperat
                keywords(3) ='*Roscoe'
+               call ReadStepCommons(1,ninc,maxiter,deltaTime,deltaTemp,every)    ! AN 2016   read(1,*) ninc, maxiter, deltaTime ! AN 2023 temperat
                read(1,*)   deltaLoad(2)                                      ! = deviatoric strain
                goto 10
             endif
@@ -648,7 +650,8 @@ PROGRAM that_calls_umat   ! written by  A.Niemunis  2007 - 2023
                      u_dstress = - matmul(cMt,a_dstress)-matmul(cMe,dstran)+ mbinc
                      call  USOLVER(ddsdde_bar,c_dstran,u_dstress,ifstress,ntens)
                      dstran = dstran + c_dstran
-
+                     
+                     print *, "Printing the strain increment:", dstran
                      call  UMAT(stress,statev,ddsdde,sse,spd,scd,                       &
                         rpl,ddsddt,drplde,drpldt,                               &
                         stran,dstran,time,dtime,temp,dtemp,predef,dpred,cmname, &

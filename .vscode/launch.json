@@ -1,0 +1,30 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "(gdb) Fortran",
+        "type": "cppdbg",
+        "request": "launch",
+        "program": "/home/jmoore/Geotech_Research/Critical_Soil_Models/Modified_Cam_Clay_Potts/build/gfortran_E167FD2A985B468F/app/CamClay_inc_Driver",
+        "args": [], // Possible input args for a.out
+        "stopAtEntry": true,
+        "justMyCode": false,
+        // "cwd": "${workspaceFolder}",
+        "cwd": "/home/jmoore/Geotech_Research/Critical_Soil_Models/pumat/4_MCC_Drained_test",
+        "environment": [],
+        "externalConsole": false,
+        "MIMode": "gdb",
+        "miDebuggerPath": "/usr/bin/gdb",  // Adjust this path to where gdb is installed
+        "setupCommands": [
+          {
+            "description": "Enable pretty-printing for gdb",
+            "text": "-enable-pretty-printing",
+            "ignoreFailures": true,
+          },
+        ],
+      },
+    ],
+  }

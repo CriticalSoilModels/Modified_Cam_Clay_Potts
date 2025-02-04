@@ -151,7 +151,7 @@ contains
       ! Make a file named diagnostics_output.txt in the folder or else you will have error 
       ! Erase data in file before every run
       output_file = 'diagnostics_output.txt' 
-      open(unit=10, file=output_file, status='old', action='write', position='append', iostat=status)
+      open(unit=10, file=output_file, status='replace', action='write', iostat=status)
       
 
       if (status /= 0) then
