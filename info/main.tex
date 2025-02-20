@@ -1,0 +1,190 @@
+\documentclass[a4paper,12pt]{article}
+
+% Preamble - Packages and settings
+\usepackage[utf8]{inputenc}      % Encoding for special characters
+\usepackage{amsmath}             % For advanced math
+\usepackage{amsfonts}            % For fonts used in math
+\usepackage{graphicx}            % For including images
+\usepackage{geometry}            % Adjust page dimensions
+\usepackage{hyperref}            % For hyperlinks
+\usepackage{fancyhdr}            % For fancy headers
+\usepackage{lipsum}              % For generating placeholder text
+\usepackage{natbib}
+
+\hypersetup{
+    colorlinks=true,        % Enable colored links
+    linkcolor=blue,         % Color for internal links
+    citecolor=black,        % Color for citations
+    filecolor=magenta,      % Color for file links
+    urlcolor=blue            % Color for URLs
+}
+
+% Page layout settings
+\geometry{top=1in, bottom=1in, left=1in, right=1in} % Adjust margins
+
+% Header and Footer Setup
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{Header Text on the Left}
+\fancyhead[C]{Header Text in the Center}
+\fancyhead[R]{Header Text on the Right}
+\fancyfoot[C]{Page \thepage}
+
+\title{Cam Clay Model Information}
+\author{Jonathan Moore}
+\date{\today}
+
+\begin{document}
+
+% Title page
+\maketitle
+
+\begin{abstract}
+    Information about the Cam Clay model documenting the assumptions and the implications of the assumptions. These are incomplete notes but I think they will help in getting a general idea and making sure the implementaion is as correct as possible.
+\end{abstract}
+
+\section{Introduction}
+Information about the Cam Clay constitutive model. This is a slight review of work done already by others. This isn't meant to be formal, instead its a way of understading the implementation in the code.
+
+\section{Main Content}
+
+
+Stress is assumed to be positive in tension and negative in compression. This is the standard assumption in continuum mechanics but goes against geotechnical convention.
+
+Tensors are represented in voight notation.
+
+
+Given a symmetric matrix where the ordering is,
+\begin{equation}
+    \bf{T} =
+    \begin{bmatrix}
+        T_{11} & T_{12} & T_{13} \\
+        T_{21} & T_{22} & T_{23} \\
+        T_{31} & T_{32} & T_{33} \\
+    \end{bmatrix}
+\end{equation}
+
+The order of voight notaion 
+% (TODO: Add the voight ordering)
+\begin{equation}
+    \bf{T} = 
+    \begin{bmatrix}
+        T_{11} & T_{22} & T_{33} \\
+    \end{bmatrix}
+\end{equation}
+
+%%% What information do I need to include:
+%%%     What is the voight order
+%%%     Yield Functions that are included and what value are related to them
+%%%     Derivatives for the yield functions in terms of the invariants
+%%%     Definitions of the invariants that are used
+%%%     Note that the constitutive model assumes that unrotated value are passed into it.
+%%%     Definitions of the variables used and what they mean
+%%%     Constraints on the values used (Thinking preconsolidation pressure here)
+%%%     Information on the calibration of the parameters from geotech lab results. Might be able to reference the Kayenta Manual here
+
+
+
+
+In the future figure out how to generate this from the code itself and not make it a seperate document. 
+    Might be able to use FORD and some formatting to generate the information
+    Also might be able to use the MkDocs and that way code from the model can be used. Honestly might be worth transitioning to that in a bit, but first I want to get some ideas down before adding a new tool. That sounds good.
+
+Should turn this into a template and that way it can be used for the other constitutive models are shared with the other people. Also might be possbile to use the template and an LLM to automatically generate the model
+
+\section{General Information}
+
+Following the convention in Kayenta, mean stress, ($p$) is
+\begin{equation}
+    p = \frac{1}{3}tr(\sigma_{ij})
+\end{equation}
+%
+and hydrostatic pressure $\bar{p}$ is
+\begin{equation}
+    \bar{p} = -p = \frac{1}{3}tr(\sigma_{ij})  
+\end{equation} 
+
+Table \ref{tab:variable_info} contains names of variables and there equation definition that is consistent across the different implementations.
+\begin{table}[ht]
+    \centering
+    \begin{tabular}{|l|l|}
+        \hline
+        \textbf{Variable Name} & \textbf{Definition} \\
+        \hline
+        Mean Stress, $p$                   & $\frac{1}{3}tr(\sigma_{ij})$ \\
+        Preconsolidation Pressure, $p_{c}$ & Maximum mean stress the soil has experienced \\
+        Void Ratio, $e$                    & Ratio of void volume to solid volume $\frac{V_{v}}{V_{s}}$ \\
+        Critical Stress ratio, $M$         & Stress ratio at critical state $\frac{q}{p}$ \\
+        \hline
+    \end{tabular}
+    \caption{List of Variables and Their Definitions}
+    \label{tab:variable_info}
+\end{table}
+
+\section{Silbermann and Nagel CamClay}
+
+This section is notes from the formulation presented in \cite{silbermannImplementationModifiedCam}. \cite{silbermannImplementationModifiedCam} formulation is based on $q$ and hydrostatic pressure $\bar{p}$. In their paper they refer to $\bar{p}$ as $p$. In these notes $p$ is reserved for mean stress. The symbol convention here, follows Kayenta. To maximize my personal understanding, the equations from \cite{silbermannImplementationModifiedCam} related to $\bar{p}$ are first presented in the form they followed and then converted to use $p$.
+
+Note: This means the preconsolidation pressure is negative. Need to think about this and make sure this makes sense in the context of the logarithms. I hate logarithms sometimes. Is it worth using the pressure terms? Make a function for the pressure that call the function for the mean stress? This thing is turning into a nested nightmare. Also have to be cognizant of how that is going to impact the deviatoric calcs and need to make sure all of that aligns. This is going to be a good push for the invariant library.
+
+I think using the pressure is going to be worth it. The logs are going to be a problem, but I want to see a flow chart for the calculation first to be able to understand what is going where. I should also check what that textbook does with the geotech params that were mentioned there. I want to have a better understanding of that. 
+
+It would be cool to be able to used the smoothed MC yield surface in the different models when required. I think this could become a compile time value or just a parameter into the model that is required when using a particular material model. This isn't a high priority problem though. This can be thought about later.
+
+Might need to shift back to the flow chart form. I want to understand what the parameters for each of these models are.
+
+Should still go through and make sure that everything flows in the right direction. I want to be able to compare the different formulas the different authors provide and the ones that I have to make sure everybody is staying on the same page.
+
+% \begin{table}[ht]
+%     \centering
+%     \begin{tabular}{|l|l|}
+%     \hline
+%     \textbf{Eqn. Name} & \textbf{Hydo. Pressure Form, $\bar{p}$} & \textbf{Mean Stress Form, $p$}
+%     \hline
+%     Yield Function & & \\
+%     Yield Function Derivatives
+%     \end{tabular}
+    
+% \end{table}
+
+Yield Function
+\begin{equation}
+    f = 
+\end{equation}
+
+\section{Equations}
+
+Variable Definition
+
+\begin{itemize}
+    \item Mean stress, $p = \frac{}{}$
+\end{itemize}
+\subsection{Yield Function}
+
+There are multiple yield functions included in the implementaion and can be used for different scenarios. This section provides information on the yield functions and the associated implications.
+
+\subsubsection{Standard Modified Cam Clay (MCC)}
+
+\subsubsection{Hvorselev MCC}
+The purpose of this yield function is to better the strenth of the material at low mean stress ($p$)
+Yield Function
+
+Yield Function derivatives
+
+
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% \section{Information}
+
+
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% \section{Testing and Validation}
+
+% \subsection{Testing}
+
+% \subsection{Validation}
+
+\bibliographystyle{plainnat}   
+\bibliography{CamClay}
+
+\end{document}

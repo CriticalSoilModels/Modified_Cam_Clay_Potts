@@ -1,0 +1,50 @@
+This is BibTeX, Version 0.99d (TeX Live 2022/Debian)
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: main.aux
+The style file: plainnat.bst
+Database file #1: CamClay.bib
+Warning--empty journal in silbermannImplementationModifiedCam
+Warning--empty year in silbermannImplementationModifiedCam
+Warning--empty year in silbermannImplementationModifiedCam
+You've used 1 entry,
+            2773 wiz_defined-function locations,
+            596 strings with 5015 characters,
+and the built_in function-call counts, 394 in all, are:
+= -- 29
+> -- 21
+< -- 1
++ -- 7
+- -- 6
+* -- 29
+:= -- 65
+add.period$ -- 2
+call.type$ -- 1
+change.case$ -- 5
+chr.to.int$ -- 1
+cite$ -- 5
+duplicate$ -- 19
+empty$ -- 31
+format.name$ -- 9
+if$ -- 74
+int.to.chr$ -- 1
+int.to.str$ -- 1
+missing$ -- 1
+newline$ -- 12
+num.names$ -- 4
+pop$ -- 16
+preamble$ -- 1
+purify$ -- 4
+quote$ -- 0
+skip$ -- 14
+stack$ -- 0
+substring$ -- 2
+swap$ -- 0
+text.length$ -- 0
+text.prefix$ -- 0
+top$ -- 0
+type$ -- 11
+warning$ -- 3
+while$ -- 3
+width$ -- 0
+write$ -- 16
+(There were 3 warnings)
